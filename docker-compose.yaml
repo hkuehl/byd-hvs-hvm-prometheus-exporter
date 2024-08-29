@@ -1,0 +1,13 @@
+version: '3'
+services:
+  byd-exporter:
+    build: .
+    container_name: byd_exporter
+    environment:
+      - BATTERY_IP=192.168.2.22
+      - BATTERY_PORT=8080
+      - PROMETHEUS_PORT=3425
+      - POLLING_INTERVAL=30
+    ports:
+      - "3425:3425"
+
