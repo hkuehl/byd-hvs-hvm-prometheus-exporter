@@ -58,6 +58,9 @@ discharge_total_counter = Counter('byd_discharge_total', 'Total Discharge')
 tower_voltage_gauge = Gauge('byd_tower_voltage', 'Tower Voltage', ['tower'])
 tower_temp_gauge = Gauge('byd_tower_temp', 'Tower Temperature', ['tower'])
 tower_balancing_gauge = Gauge('byd_tower_balancing', 'Tower Balancing Count', ['tower'])
+cell_temp_gauge = Gauge('byd_battery_cell_group_temp_celsius', 'Battery Temperature per cell group in Celsius', ['cell_group'])
+cell_voltage_gauge = Gauge('byd_battery_cell_voltage_volt', 'Battery Cell Voltage in Volts', ['cell'])
+
 
 # Global Variables
 myState = STATE_START
@@ -210,7 +213,10 @@ def decode_packet5(data, towerNumber=0):
     # Starting with byte 101, ending with 131, Cell voltage 1-16
     MaxCells = 16
     for i in range(MaxCells):
-        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 1] = buf2int16SI(byteArray, i * 2 + 101)
+        cell_voltage = buf2int16SI(byteArray, i * 2 + 101)
+        cell_label = f"{i + 1}"
+        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 1] = cell_voltage
+        cell_voltage_gauge.labels(cell=cell_label).set(cell_voltage / 100.0)  # Assuming voltage needs to be divided by 100 for correct scaling
 
     # Balancing Flags
     towerAttributes[towerNumber]["balancing"] = data[17:33].hex()
@@ -257,16 +263,24 @@ def decode_packet7(data, towerNumber=0):
         MaxCells = 48
 
     for i in range(MaxCells):
-        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 81] = buf2int16SI(byteArray, i * 2 + 5)
+        cell_voltage = buf2int16SI(byteArray, i * 2 + 5)
+        cell_label = f"{i + 81}"
+        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 81] = cell_voltage
+        cell_voltage_gauge.labels(cell=cell_label).set(cell_voltage / 100.0)  # Adjust for scaling
 
     MaxTemps = hvsNumTemps
     if MaxTemps > 30:
         MaxTemps = 30
 
     for i in range(MaxTemps):
-        towerAttributes[towerNumber].setdefault("hvsBatteryTempperCell", {})[i + 1] = byteArray[i + 103]
+        cell_temp = byteArray[i + 103]
+        cell_group_label = f"{i + 1}"
+        towerAttributes[towerNumber].setdefault("hvsBatteryTempperCell", {})[i + 1] = cell_temp
+        cell_temp_gauge.labels(cell_group=cell_group_label).set(cell_temp)  # Using 'cell_group' as the label
 
     print(f"Decoded packet 7 for tower {towerNumber}: {towerAttributes[towerNumber]}")
+
+
 
 def decode_packet8(data, towerNumber=0):
     byteArray = list(data)
