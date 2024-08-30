@@ -306,6 +306,8 @@ def update_prometheus_metrics():
     global hvsSOC, hvsMaxVolt, hvsMinVolt, hvsSOH, hvsA, hvsBattVolt, hvsMaxTemp, hvsMinTemp, hvsBatTemp
     charge_total = towerAttributes[0].get("chargeTotal", 0)
     discharge_total = towerAttributes[0].get("dischargeTotal", 0)
+    eta = towerAttributes[0].get("eta", 0)
+
 
     # Update general metrics
     soc_gauge.set(hvsSOC)
@@ -319,6 +321,7 @@ def update_prometheus_metrics():
     battery_temp_gauge.set(hvsBatTemp)
     charge_total_counter.inc(charge_total)
     discharge_total_counter.inc(discharge_total)
+    eta_gauge.set(eta)
 
     # Update cell-specific metrics
     for cell_number, voltage in towerAttributes[0].get("hvsBatteryVoltsperCell", {}).items():
