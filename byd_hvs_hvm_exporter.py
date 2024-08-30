@@ -23,8 +23,7 @@ STATE_DECODE_PACKET5 = 8
 STATE_DECODE_PACKET6 = 9
 STATE_DECODE_PACKET7 = 10
 STATE_DECODE_PACKET8 = 11
-STATE_SECOND_TURN = 12
-STATE_FINISH = 0
+STATE_FINISH = 12
 
 # MODBUS Messages (using actual hex values from the JavaScript file)
 MESSAGE_0 = "010300000066c5e0"
@@ -36,11 +35,7 @@ MESSAGE_5 = "01030558004104e5"
 MESSAGE_6 = "01030558004104e5"
 MESSAGE_7 = "01030558004104e5"
 MESSAGE_8 = "01030558004104e5"
-MESSAGE_9 = "01100100000306444542554700176f"
-MESSAGE_10 = "0110055000020400018100f853"
-MESSAGE_11 = "010305510001d517"
-MESSAGE_12 = "01030558004104e5"
-MESSAGE_13 = "01030558004104e5"
+MESSAGE_12 = "01030558004104e5"  # Placeholder message for decode_response12
 
 # Prometheus Metrics
 soc_gauge = Gauge('byd_soc', 'State of Charge')
@@ -58,14 +53,13 @@ discharge_total_counter = Counter('byd_discharge_total', 'Total Discharge')
 tower_voltage_gauge = Gauge('byd_tower_voltage', 'Tower Voltage', ['tower'])
 tower_temp_gauge = Gauge('byd_tower_temp', 'Tower Temperature', ['tower'])
 tower_balancing_gauge = Gauge('byd_tower_balancing', 'Tower Balancing Count', ['tower'])
-cell_temp_gauge = Gauge('byd_battery_cell_group_temp_celsius', 'Battery Temperature per cell group in Celsius', ['cell_group'])
-cell_voltage_gauge = Gauge('byd_battery_cell_voltage_volt', 'Battery Cell Voltage in Volts', ['cell'])
-
+cell_temp_gauge = Gauge('hvsBatteryCellTempCelsius', 'Battery Cell Temperature in Celsius', ['cell_group'])
+cell_voltage_gauge = Gauge('hvsBatteryCellVoltageVolt', 'Battery Cell Voltage in Volts', ['cell'])
 
 # Global Variables
 myState = STATE_START
 myNumberforDetails = 0
-towerAttributes = [{}]
+towerAttributes = [{}]  # Single tower setup
 hvsModules = 0
 hvsBattType_fromSerial = ""
 hvsNumCells = 0
@@ -128,7 +122,6 @@ def decode_packet0(data):
     hvsBMU = f"{hvsBMUA}-A" if byteArray[33] == 0 else f"{hvsBMUB}-B"
     hvsBMS = f"V{byteArray[31]}.{byteArray[32]}-{chr(byteArray[34] + 65)}"
     hvsModules = byteArray[36] % 16
-    hvsTowers = byteArray[36] // 16
     hvsGrid = {0: "OffGrid", 1: "OnGrid", 2: "Backup"}.get(byteArray[38], "Unknown")
 
     print({
@@ -137,12 +130,12 @@ def decode_packet0(data):
         "FirmwareBMU": hvsBMU,
         "FirmwareBMS": hvsBMS,
         "Modules": hvsModules,
-        "Towers": hvsTowers,
         "GridType": hvsGrid
     })
 
 def decode_packet1(data):
     byteArray = list(data)
+    global hvsSOC, hvsMaxVolt, hvsMinVolt, hvsSOH, hvsA, hvsBattVolt, hvsMaxTemp, hvsMinTemp, hvsBatTemp
     hvsSOC = buf2int16SI(byteArray, 3)
     hvsMaxVolt = round(buf2int16SI(byteArray, 5) / 100.0, 2)
     hvsMinVolt = round(buf2int16SI(byteArray, 7) / 100.0, 2)
@@ -164,17 +157,6 @@ def decode_packet1(data):
         "MinTemp": hvsMinTemp,
         "BatteryTemp": hvsBatTemp
     })
-
-    # Update Prometheus metrics
-    soc_gauge.set(hvsSOC)
-    max_voltage_gauge.set(hvsMaxVolt)
-    min_voltage_gauge.set(hvsMinVolt)
-    soh_gauge.set(hvsSOH)
-    current_gauge.set(hvsA)
-    battery_voltage_gauge.set(hvsBattVolt)
-    max_temp_gauge.set(hvsMaxTemp)
-    min_temp_gauge.set(hvsMinTemp)
-    battery_temp_gauge.set(hvsBatTemp)
 
 def decode_packet2(data):
     global hvsNumCells, hvsNumTemps
@@ -201,62 +183,49 @@ def decode_packet2(data):
         "NumTemps": hvsNumTemps
     })
 
-def decode_packet5(data, towerNumber=0):
+def decode_packet5(data):
     byteArray = list(data)
-    towerAttributes[towerNumber]["hvsMaxmVolt"] = buf2int16SI(byteArray, 5)
-    towerAttributes[towerNumber]["hvsMinmVolt"] = buf2int16SI(byteArray, 7)
-    towerAttributes[towerNumber]["hvsMaxmVoltCell"] = byteArray[9]
-    towerAttributes[towerNumber]["hvsMinmVoltCell"] = byteArray[10]
-    towerAttributes[towerNumber]["hvsMaxTempCell"] = byteArray[15]
-    towerAttributes[towerNumber]["hvsMinTempCell"] = byteArray[16]
+    towerAttributes[0]["hvsMaxmVolt"] = buf2int16SI(byteArray, 5)
+    towerAttributes[0]["hvsMinmVolt"] = buf2int16SI(byteArray, 7)
+    towerAttributes[0]["hvsMaxmVoltCell"] = byteArray[9]
+    towerAttributes[0]["hvsMinmVoltCell"] = byteArray[10]
+    towerAttributes[0]["hvsMaxTempCell"] = byteArray[15]
+    towerAttributes[0]["hvsMinTempCell"] = byteArray[16]
 
-    # Starting with byte 101, ending with 131, Cell voltage 1-16
+    # Collect cell voltage data for cells 1-16
     MaxCells = 16
     for i in range(MaxCells):
         cell_voltage = buf2int16SI(byteArray, i * 2 + 101)
-        cell_label = f"{i + 1}"
-        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 1] = cell_voltage
-        cell_voltage_gauge.labels(cell=cell_label).set(cell_voltage / 100.0)  # Assuming voltage needs to be divided by 100 for correct scaling
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[i + 1] = cell_voltage
 
-    # Balancing Flags
-    towerAttributes[towerNumber]["balancing"] = data[17:33].hex()
-    towerAttributes[towerNumber]["balancingcount"] = countSetBits(data[17:33])
+    # Collect balancing and other data
+    towerAttributes[0]["balancing"] = data[17:33].hex()
+    towerAttributes[0]["balancingcount"] = countSetBits(data[17:33])
+    towerAttributes[0]["chargeTotal"] = buf2int32US(byteArray, 33)
+    towerAttributes[0]["dischargeTotal"] = buf2int32US(byteArray, 37)
+    towerAttributes[0]["eta"] = buf2int32US(byteArray, 37) / buf2int32US(byteArray, 33) if buf2int32US(byteArray, 33) > 0 else 0
+    towerAttributes[0]["batteryVolt"] = buf2int16SI(byteArray, 45)
+    towerAttributes[0]["outVolt"] = buf2int16SI(byteArray, 51)
+    towerAttributes[0]["hvsSOCDiagnosis"] = round(buf2int16SI(byteArray, 53) / 10.0, 1)
+    towerAttributes[0]["soh"] = buf2int16SI(byteArray, 55)
+    towerAttributes[0]["state"] = f"{byteArray[59]:02x}{byteArray[60]:02x}"
 
-    # Ensure the charge and discharge totals are updated correctly as counters
-    charge_total = buf2int32US(byteArray, 33)
-    discharge_total = buf2int32US(byteArray, 37)
-    towerAttributes[towerNumber]["chargeTotal"] = charge_total
-    towerAttributes[towerNumber]["dischargeTotal"] = discharge_total
+    print(f"Decoded packet 5 for tower 0: {towerAttributes[0]}")
 
-    charge_total_counter.inc(charge_total)
-    discharge_total_counter.inc(discharge_total)
-
-    towerAttributes[towerNumber]["eta"] = discharge_total / charge_total if charge_total > 0 else 0
-    towerAttributes[towerNumber]["batteryVolt"] = buf2int16SI(byteArray, 45)
-    towerAttributes[towerNumber]["outVolt"] = buf2int16SI(byteArray, 51)
-    towerAttributes[towerNumber]["hvsSOCDiagnosis"] = round(buf2int16SI(byteArray, 53) / 10.0, 1)
-    towerAttributes[towerNumber]["soh"] = buf2int16SI(byteArray, 55)
-    towerAttributes[towerNumber]["state"] = f"{byteArray[59]:02x}{byteArray[60]:02x}"
-
-    # Update Prometheus metrics for this tower
-    tower_voltage_gauge.labels(tower=towerNumber).set(towerAttributes[towerNumber]["batteryVolt"])
-    tower_temp_gauge.labels(tower=towerNumber).set(towerAttributes[towerNumber]["hvsSOCDiagnosis"])
-    tower_balancing_gauge.labels(tower=towerNumber).set(towerAttributes[towerNumber]["balancingcount"])
-
-    print(f"Decoded packet 5 for tower {towerNumber}: {towerAttributes[towerNumber]}")
-
-def decode_packet6(data, towerNumber=0):
+def decode_packet6(data):
     byteArray = list(data)
     MaxCells = hvsNumCells - 16
     if MaxCells > 64:
         MaxCells = 64
 
     for i in range(MaxCells):
-        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 17] = buf2int16SI(byteArray, i * 2 + 5)
+        cell_voltage = buf2int16SI(byteArray, i * 2 + 5)
+        cell_label = f"{i + 17}"
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[i + 17] = cell_voltage
 
-    print(f"Decoded packet 6 for tower {towerNumber}: {towerAttributes[towerNumber]}")
+    print(f"Decoded packet 6 for tower 0: {towerAttributes[0]}")
 
-def decode_packet7(data, towerNumber=0):
+def decode_packet7(data):
     byteArray = list(data)
     MaxCells = hvsNumCells - 80
     if MaxCells > 48:
@@ -265,8 +234,7 @@ def decode_packet7(data, towerNumber=0):
     for i in range(MaxCells):
         cell_voltage = buf2int16SI(byteArray, i * 2 + 5)
         cell_label = f"{i + 81}"
-        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[i + 81] = cell_voltage
-        cell_voltage_gauge.labels(cell=cell_label).set(cell_voltage / 100.0)  # Adjust for scaling
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[i + 81] = cell_voltage
 
     MaxTemps = hvsNumTemps
     if MaxTemps > 30:
@@ -275,25 +243,24 @@ def decode_packet7(data, towerNumber=0):
     for i in range(MaxTemps):
         cell_temp = byteArray[i + 103]
         cell_group_label = f"{i + 1}"
-        towerAttributes[towerNumber].setdefault("hvsBatteryTempperCell", {})[i + 1] = cell_temp
-        cell_temp_gauge.labels(cell_group=cell_group_label).set(cell_temp)  # Using 'cell_group' as the label
+        towerAttributes[0].setdefault("hvsBatteryTempperCell", {})[i + 1] = cell_temp
 
-    print(f"Decoded packet 7 for tower {towerNumber}: {towerAttributes[towerNumber]}")
+    print(f"Decoded packet 7 for tower 0: {towerAttributes[0]}")
 
-
-
-def decode_packet8(data, towerNumber=0):
+def decode_packet8(data):
     byteArray = list(data)
     MaxTemps = hvsNumTemps - 30
     if MaxTemps > 34:
         MaxTemps = 34
 
     for i in range(MaxTemps):
-        towerAttributes[towerNumber].setdefault("hvsBatteryTempperCell", {})[i + 31] = byteArray[i + 5]
+        cell_temp = byteArray[i + 5]
+        cell_group_label = f"{i + 31}"
+        towerAttributes[0].setdefault("hvsBatteryTempperCell", {})[i + 31] = cell_temp
 
-    print(f"Decoded packet 8 for tower {towerNumber}: {towerAttributes[towerNumber]}")
+    print(f"Decoded packet 8 for tower 0: {towerAttributes[0]}")
 
-def decode_response12(data, towerNumber=0):
+def decode_response12(data):
     byteArray = list(data)
     MaxCells = 16
     start_byte = 101
@@ -306,9 +273,9 @@ def decode_response12(data, towerNumber=0):
         cell_index = i + 1 + 128
         pos = i * 2 + start_byte
         cell_voltage = buf2int16SI(byteArray, pos)
-        towerAttributes[towerNumber].setdefault("hvsBatteryVoltsperCell", {})[cell_index] = cell_voltage
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[cell_index] = cell_voltage
 
-    print(f"Decoded response 12 for tower {towerNumber}: {towerAttributes[towerNumber]}")
+    print(f"Decoded response 12 for tower 0: {towerAttributes[0]}")
 
 def setStates():
     print("Setting states:", towerAttributes)
@@ -334,6 +301,38 @@ def handle_state(client, next_state, message, decode_function, *args):
         decode_function(data, *args)
         myState = next_state
     time.sleep(MESSAGE_DELAY)
+
+def update_prometheus_metrics():
+    global hvsSOC, hvsMaxVolt, hvsMinVolt, hvsSOH, hvsA, hvsBattVolt, hvsMaxTemp, hvsMinTemp, hvsBatTemp
+    charge_total = towerAttributes[0].get("chargeTotal", 0)
+    discharge_total = towerAttributes[0].get("dischargeTotal", 0)
+
+    # Update general metrics
+    soc_gauge.set(hvsSOC)
+    max_voltage_gauge.set(hvsMaxVolt)
+    min_voltage_gauge.set(hvsMinVolt)
+    soh_gauge.set(hvsSOH)
+    current_gauge.set(hvsA)
+    battery_voltage_gauge.set(hvsBattVolt)
+    max_temp_gauge.set(hvsMaxTemp)
+    min_temp_gauge.set(hvsMinTemp)
+    battery_temp_gauge.set(hvsBatTemp)
+    charge_total_counter.inc(charge_total)
+    discharge_total_counter.inc(discharge_total)
+
+    # Update cell-specific metrics
+    for cell_number, voltage in towerAttributes[0].get("hvsBatteryVoltsperCell", {}).items():
+        cell_label = f"{cell_number}"
+        cell_voltage_gauge.labels(cell=cell_label).set(voltage / 1000.0)  # Consistent scaling
+
+    for temp_number, temp in towerAttributes[0].get("hvsBatteryTempperCell", {}).items():
+        cell_group_label = f"{temp_number}"
+        cell_temp_gauge.labels(cell_group=cell_group_label).set(temp)  # Assuming temperature is in Celsius
+
+    # Update tower-specific metrics
+    tower_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("batteryVolt", 0))
+    tower_temp_gauge.labels(tower="0").set(towerAttributes[0].get("hvsSOCDiagnosis", 0))
+    tower_balancing_gauge.labels(tower="0").set(towerAttributes[0].get("balancingcount", 0))
 
 def main():
     global myState, myNumberforDetails, hvsModules, hvsBattType_fromSerial, hvsNumCells, hvsNumTemps, towerAttributes
@@ -381,6 +380,11 @@ def main():
                 handle_state(client, STATE_DECODE_PACKET8, MESSAGE_8, decode_packet8)
 
             if myState == STATE_DECODE_PACKET8:
+                handle_state(client, STATE_FINISH, MESSAGE_12, decode_response12)
+
+            if myState == STATE_FINISH:
+                # Update metrics after all data has been collected
+                update_prometheus_metrics()
                 setStates()
                 close_connection(client)
                 myState = STATE_START
