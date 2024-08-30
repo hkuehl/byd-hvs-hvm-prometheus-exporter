@@ -53,8 +53,8 @@ discharge_total_counter = Counter('byd_discharge_total', 'Total Discharge')
 tower_voltage_gauge = Gauge('byd_tower_voltage', 'Tower Voltage', ['tower'])
 tower_temp_gauge = Gauge('byd_tower_temp', 'Tower Temperature', ['tower'])
 tower_balancing_gauge = Gauge('byd_tower_balancing', 'Tower Balancing Count', ['tower'])
-cell_temp_gauge = Gauge('hvsBatteryCellTempCelsius', 'Battery Cell Temperature in Celsius', ['cell_group'])
-cell_voltage_gauge = Gauge('hvsBatteryCellVoltageVolt', 'Battery Cell Voltage in Volts', ['cell'])
+cell_temp_gauge = Gauge('byd_battery_cell_temp_celsius', 'Battery Cell Temperature in Celsius', ['cell_group'])
+cell_voltage_gauge = Gauge('byd_battery_cell_voltage_volt', 'Battery Cell Voltage in Volts', ['cell'])
 
 # Global Variables
 myState = STATE_START
