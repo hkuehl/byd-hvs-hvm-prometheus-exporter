@@ -51,7 +51,7 @@ eta_gauge = Gauge('byd_eta', 'Battery ETA')
 charge_total_counter = Counter('byd_charge_total', 'Total Charge')
 discharge_total_counter = Counter('byd_discharge_total', 'Total Discharge')
 tower_voltage_gauge = Gauge('byd_tower_voltage', 'Tower Voltage', ['tower'])
-tower_temp_gauge = Gauge('byd_tower_temp', 'Tower Temperature', ['tower'])
+tower_soc_diagnosis_gauge = Gauge('byd_tower_soc_diagnosis', 'Tower SOC Diagnosis', ['tower'])
 tower_balancing_gauge = Gauge('byd_tower_balancing', 'Tower Balancing Count', ['tower'])
 cell_temp_gauge = Gauge('byd_battery_cell_temp_celsius', 'Battery Cell Temperature in Celsius', ['cell_group'])
 cell_voltage_gauge = Gauge('byd_battery_cell_voltage_volt', 'Battery Cell Voltage in Volts', ['cell'])
@@ -334,7 +334,7 @@ def update_prometheus_metrics():
 
     # Update tower-specific metrics
     tower_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("batteryVolt", 0))
-    tower_temp_gauge.labels(tower="0").set(towerAttributes[0].get("hvsSOCDiagnosis", 0))
+    tower_soc_diagnosis_gauge.labels(tower="0").set(towerAttributes[0].get("hvsSOCDiagnosis", 0))
     tower_balancing_gauge.labels(tower="0").set(towerAttributes[0].get("balancingcount", 0))
 
 def main():
