@@ -47,14 +47,32 @@ battery_voltage_gauge = Gauge('byd_battery_voltage', 'Battery Voltage')
 max_temp_gauge = Gauge('byd_max_temp', 'Maximum Temperature')
 min_temp_gauge = Gauge('byd_min_temp', 'Minimum Temperature')
 battery_temp_gauge = Gauge('byd_battery_temp', 'Battery Temperature')
-eta_gauge = Gauge('byd_eta', 'Battery ETA')
-charge_total_counter = Counter('byd_charge_total', 'Total Charge')
-discharge_total_counter = Counter('byd_discharge_total', 'Total Discharge')
+eta_gauge = Gauge('byd_eta', 'Round-trip efficiency (discharge_total / charge_total)')
+charge_total_gauge = Gauge('byd_charge_total', 'Cumulative charge throughput as reported by the battery (raw units)')
+discharge_total_gauge = Gauge('byd_discharge_total', 'Cumulative discharge throughput as reported by the battery (raw units)')
 tower_voltage_gauge = Gauge('byd_tower_voltage', 'Tower Voltage', ['tower'])
 tower_soc_diagnosis_gauge = Gauge('byd_tower_soc_diagnosis', 'Tower SOC Diagnosis', ['tower'])
 tower_balancing_gauge = Gauge('byd_tower_balancing', 'Tower Balancing Count', ['tower'])
+tower_out_voltage_gauge = Gauge('byd_tower_out_voltage', 'Tower DC bus output voltage', ['tower'])
+tower_soh_gauge = Gauge('byd_tower_soh', 'State of Health reported in packet 5', ['tower'])
+tower_max_cell_voltage_index_gauge = Gauge('byd_tower_max_cell_voltage_index', 'Index of cell with maximum voltage', ['tower'])
+tower_min_cell_voltage_index_gauge = Gauge('byd_tower_min_cell_voltage_index', 'Index of cell with minimum voltage', ['tower'])
+tower_max_cell_temp_index_gauge = Gauge('byd_tower_max_cell_temp_index', 'Index of cell group with maximum temperature', ['tower'])
+tower_min_cell_temp_index_gauge = Gauge('byd_tower_min_cell_temp_index', 'Index of cell group with minimum temperature', ['tower'])
 cell_temp_gauge = Gauge('byd_battery_cell_temp_celsius', 'Battery Cell Temperature in Celsius', ['cell_group'])
 cell_voltage_gauge = Gauge('byd_battery_cell_voltage_volt', 'Battery Cell Voltage in Volts', ['cell'])
+
+# Identity / static info (constant 1, info carried in labels)
+battery_info_gauge = Gauge(
+    'byd_battery_info',
+    'Static battery identity; value is always 1, info is in the labels',
+    ['serial', 'battery_type', 'firmware_bmu', 'firmware_bms', 'modules', 'grid_type'],
+)
+
+# Exporter self-metrics
+scrape_errors_counter = Counter('byd_scrape_errors_total', 'Total number of failed polling cycles')
+scrape_duration_gauge = Gauge('byd_scrape_duration_seconds', 'Duration of the most recent polling cycle in seconds')
+last_success_gauge = Gauge('byd_last_success_timestamp_seconds', 'Unix timestamp of the most recent successful polling cycle')
 
 # Global Variables
 myState = STATE_START
@@ -64,6 +82,19 @@ hvsModules = 0
 hvsBattType_fromSerial = ""
 hvsNumCells = 0
 hvsNumTemps = 0
+hvsSerial = ""
+hvsBMU = ""
+hvsBMS = ""
+hvsGrid = ""
+hvsSOC = 0
+hvsMaxVolt = 0.0
+hvsMinVolt = 0.0
+hvsSOH = 0
+hvsA = 0.0
+hvsBattVolt = 0.0
+hvsMaxTemp = 0
+hvsMinTemp = 0
+hvsBatTemp = 0
 
 # Helper Functions
 
@@ -89,33 +120,21 @@ def buf2int16SI(byteArray, pos):
     return value
 
 def send_msg(client, msg, timeout):
-    try:
-        message_bytes = bytes.fromhex(msg)
-    except ValueError:
-        print(f"Invalid hexadecimal message: {msg}")
-        return False, []
-
+    message_bytes = bytes.fromhex(msg)
     client.send(message_bytes)
     client.settimeout(timeout)
-    try:
-        data = client.recv(BUFFER_SIZE)
-    except socket.timeout:
-        print("Timeout or error occurred during receiving data")
-        return False, []
-
+    data = client.recv(BUFFER_SIZE)
     d = list(data[:-2])
     crc = modbus_crc(d)
     crcx = data[-1] * 0x100 + data[-2]
     if crc != crcx:
-        print(f"send_msg recv crc not ok ({crc:04x}/{crcx:04x})")
-        return False, []
-
-    return True, data
+        raise IOError(f"send_msg recv crc not ok ({crc:04x}/{crcx:04x})")
+    return data
 
 def decode_packet0(data):
     byteArray = list(data)
+    global hvsBattType_fromSerial, hvsModules, hvsSerial, hvsBMU, hvsBMS, hvsGrid
     hvsSerial = "".join(chr(byteArray[i]) for i in range(3, 22))
-    global hvsBattType_fromSerial, hvsModules
     hvsBattType_fromSerial = "HVS" if byteArray[5] == 51 else "LVS" if byteArray[5] in (49, 50) else "Unknown"
     hvsBMUA = f"V{byteArray[27]}.{byteArray[28]}"
     hvsBMUB = f"V{byteArray[29]}.{byteArray[30]}"
@@ -277,9 +296,6 @@ def decode_response12(data):
 
     print(f"Decoded response 12 for tower 0: {towerAttributes[0]}")
 
-def setStates():
-    print("Setting states:", towerAttributes)
-
 def countSetBits(data):
     return sum(bin(byte).count('1') for byte in data)
 
@@ -296,10 +312,9 @@ def close_connection(client):
 def handle_state(client, next_state, message, decode_function, *args):
     """Handle state transition and decoding."""
     global myState
-    res, data = send_msg(client, message, 1.0)
-    if res:
-        decode_function(data, *args)
-        myState = next_state
+    data = send_msg(client, message, 1.0)
+    decode_function(data, *args)
+    myState = next_state
     time.sleep(MESSAGE_DELAY)
 
 def update_prometheus_metrics():
@@ -319,8 +334,8 @@ def update_prometheus_metrics():
     max_temp_gauge.set(hvsMaxTemp)
     min_temp_gauge.set(hvsMinTemp)
     battery_temp_gauge.set(hvsBatTemp)
-    charge_total_counter.inc(charge_total)
-    discharge_total_counter.inc(discharge_total)
+    charge_total_gauge.set(charge_total)
+    discharge_total_gauge.set(discharge_total)
     eta_gauge.set(eta)
 
     # Update cell-specific metrics
@@ -336,6 +351,23 @@ def update_prometheus_metrics():
     tower_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("batteryVolt", 0))
     tower_soc_diagnosis_gauge.labels(tower="0").set(towerAttributes[0].get("hvsSOCDiagnosis", 0))
     tower_balancing_gauge.labels(tower="0").set(towerAttributes[0].get("balancingcount", 0))
+    tower_out_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("outVolt", 0))
+    tower_soh_gauge.labels(tower="0").set(towerAttributes[0].get("soh", 0))
+    tower_max_cell_voltage_index_gauge.labels(tower="0").set(towerAttributes[0].get("hvsMaxmVoltCell", 0))
+    tower_min_cell_voltage_index_gauge.labels(tower="0").set(towerAttributes[0].get("hvsMinmVoltCell", 0))
+    tower_max_cell_temp_index_gauge.labels(tower="0").set(towerAttributes[0].get("hvsMaxTempCell", 0))
+    tower_min_cell_temp_index_gauge.labels(tower="0").set(towerAttributes[0].get("hvsMinTempCell", 0))
+
+    # Identity info: clear before setting so stale label sets don't persist across firmware/grid changes
+    battery_info_gauge.clear()
+    battery_info_gauge.labels(
+        serial=hvsSerial,
+        battery_type=hvsBattType_fromSerial,
+        firmware_bmu=hvsBMU,
+        firmware_bms=hvsBMS,
+        modules=str(hvsModules),
+        grid_type=hvsGrid,
+    ).set(1)
 
 def main():
     global myState, myNumberforDetails, hvsModules, hvsBattType_fromSerial, hvsNumCells, hvsNumTemps, towerAttributes
@@ -349,10 +381,11 @@ def main():
     print(f"Metrics server listening on port {SERVER_PORT}")
 
     while True:
-        # Reopen the socket connection at the beginning of each polling cycle
-        client = open_connection()
-
+        cycle_start = time.time()
+        client = None
         try:
+            client = open_connection()
+
             if myState == STATE_START:
                 handle_state(client, STATE_DECODE_PACKET0, MESSAGE_0, decode_packet0)
 
@@ -365,7 +398,6 @@ def main():
                 handle_state(client, STATE_START_MEASURING, MESSAGE_3, lambda x: None)
 
             if myState == STATE_START_MEASURING:
-                client.settimeout(waitTime / 1000)
                 print(f"waiting {waitTime / 1000} seconds to measure cells")
                 time.sleep(waitTime / 1000)
                 handle_state(client, STATE_WAIT_MEASURING, MESSAGE_4, lambda x: None)
@@ -386,27 +418,24 @@ def main():
                 handle_state(client, STATE_FINISH, MESSAGE_12, decode_response12)
 
             if myState == STATE_FINISH:
-                # Update metrics after all data has been collected
                 update_prometheus_metrics()
-                setStates()
-                close_connection(client)
+                last_success_gauge.set(time.time())
                 myState = STATE_START
-                time.sleep(POLLING_INTERVAL)
-                continue  # Go to the next polling cycle
-
-        except OSError as e:
-            print(f"Socket error: {e}")
-            close_connection(client)
-            myState = STATE_START
-            time.sleep(POLLING_INTERVAL)
-            continue  # Attempt to reconnect in the next polling cycle
 
         except Exception as e:
-            print(f"Unexpected error: {e}")
-            close_connection(client)
+            print(f"Scrape error: {e}")
+            scrape_errors_counter.inc()
             myState = STATE_START
-            time.sleep(POLLING_INTERVAL)
-            continue  # Restart the process in the next polling cycle
+
+        finally:
+            if client is not None:
+                try:
+                    close_connection(client)
+                except Exception:
+                    pass
+            scrape_duration_gauge.set(time.time() - cycle_start)
+
+        time.sleep(POLLING_INTERVAL)
 
 if __name__ == '__main__':
     main()
