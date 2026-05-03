@@ -160,7 +160,7 @@ def decode_packet1(data):
     hvsMinVolt = round(buf2int16SI(byteArray, 7) / 100.0, 2)
     hvsSOH = buf2int16SI(byteArray, 9)
     hvsA = round(buf2int16SI(byteArray, 11) / 10.0, 1)
-    hvsBattVolt = round(buf2int32US(byteArray, 13) / 100.0, 1)
+    hvsBattVolt = round(buf2int16SI(byteArray, 13) / 100.0, 2)
     hvsMaxTemp = buf2int16SI(byteArray, 15)
     hvsMinTemp = buf2int16SI(byteArray, 17)
     hvsBatTemp = buf2int16SI(byteArray, 19)
@@ -348,10 +348,10 @@ def update_prometheus_metrics():
         cell_temp_gauge.labels(cell_group=cell_group_label).set(temp)  # Assuming temperature is in Celsius
 
     # Update tower-specific metrics
-    tower_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("batteryVolt", 0))
+    tower_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("batteryVolt", 0) / 10.0)
     tower_soc_diagnosis_gauge.labels(tower="0").set(towerAttributes[0].get("hvsSOCDiagnosis", 0))
     tower_balancing_gauge.labels(tower="0").set(towerAttributes[0].get("balancingcount", 0))
-    tower_out_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("outVolt", 0))
+    tower_out_voltage_gauge.labels(tower="0").set(towerAttributes[0].get("outVolt", 0) / 10.0)
     tower_soh_gauge.labels(tower="0").set(towerAttributes[0].get("soh", 0))
     tower_max_cell_voltage_index_gauge.labels(tower="0").set(towerAttributes[0].get("hvsMaxmVoltCell", 0))
     tower_min_cell_voltage_index_gauge.labels(tower="0").set(towerAttributes[0].get("hvsMinmVoltCell", 0))
