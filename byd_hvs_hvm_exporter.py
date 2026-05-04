@@ -9,6 +9,7 @@ PORT = int(os.getenv("BATTERY_PORT", "8080"))
 SERVER_PORT = int(os.getenv("PROMETHEUS_PORT", "3425"))
 BUFFER_SIZE = 4096
 POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "30"))  # Polling interval in seconds
+DEBUG_RAW = os.getenv("DEBUG_RAW", "").lower() in ("1", "true", "yes")
 MESSAGE_DELAY = 0.2  # Delay between each message in seconds
 waitTime = 3000  # Wait time in milliseconds
 
@@ -121,9 +122,13 @@ def buf2int16SI(byteArray, pos):
 
 def send_msg(client, msg, timeout):
     message_bytes = bytes.fromhex(msg)
+    if DEBUG_RAW:
+        print(f"TX {msg}")
     client.send(message_bytes)
     client.settimeout(timeout)
     data = client.recv(BUFFER_SIZE)
+    if DEBUG_RAW:
+        print(f"RX ({len(data)} bytes) {data.hex()}")
     d = list(data[:-2])
     crc = modbus_crc(d)
     crcx = data[-1] * 0x100 + data[-2]
