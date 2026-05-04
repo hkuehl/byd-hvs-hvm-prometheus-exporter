@@ -36,7 +36,6 @@ MESSAGE_5 = "01030558004104e5"
 MESSAGE_6 = "01030558004104e5"
 MESSAGE_7 = "01030558004104e5"
 MESSAGE_8 = "01030558004104e5"
-MESSAGE_12 = "01030558004104e5"  # Placeholder message for decode_response12
 
 # Prometheus Metrics
 soc_gauge = Gauge('byd_soc', 'State of Charge')
@@ -120,6 +119,14 @@ def buf2int16SI(byteArray, pos):
         value -= 65536
     return value
 
+def buf2int16US(byteArray, pos):
+    return byteArray[pos] * 256 + byteArray[pos + 1]
+
+def make_request_batch_msg(batch):
+    body = [0x01, 0x10, 0x05, 0x50, 0x00, 0x02, 0x04, (batch >> 8) & 0xff, batch & 0xff, 0x81, 0x00]
+    crc = modbus_crc(body)
+    return bytes(body + [crc & 0xff, (crc >> 8) & 0xff]).hex()
+
 def send_msg(client, msg, timeout):
     message_bytes = bytes.fromhex(msg)
     if DEBUG_RAW:
@@ -129,6 +136,10 @@ def send_msg(client, msg, timeout):
     data = client.recv(BUFFER_SIZE)
     if DEBUG_RAW:
         print(f"RX ({len(data)} bytes) {data.hex()}")
+    if len(data) < 4:
+        raise IOError(f"Modbus response too short ({len(data)} bytes): {data.hex()}")
+    if data[1] & 0x80:
+        raise IOError(f"Modbus exception 0x{data[2]:02x} for function 0x{data[1] & 0x7f:02x}")
     d = list(data[:-2])
     crc = modbus_crc(d)
     crcx = data[-1] * 0x100 + data[-2]
@@ -165,7 +176,7 @@ def decode_packet1(data):
     hvsMinVolt = round(buf2int16SI(byteArray, 7) / 100.0, 2)
     hvsSOH = buf2int16SI(byteArray, 9)
     hvsA = round(buf2int16SI(byteArray, 11) / 10.0, 1)
-    hvsBattVolt = round(buf2int16SI(byteArray, 13) / 100.0, 2)
+    hvsBattVolt = round(buf2int16US(byteArray, 13) / 100.0, 2)
     hvsMaxTemp = buf2int16SI(byteArray, 15)
     hvsMinTemp = buf2int16SI(byteArray, 17)
     hvsBatTemp = buf2int16SI(byteArray, 19)
@@ -207,69 +218,58 @@ def decode_packet2(data):
         "NumTemps": hvsNumTemps
     })
 
-def decode_packet5(data):
+def decode_packet5(data, cell_offset=0):
     byteArray = list(data)
-    towerAttributes[0]["hvsMaxmVolt"] = buf2int16SI(byteArray, 5)
-    towerAttributes[0]["hvsMinmVolt"] = buf2int16SI(byteArray, 7)
-    towerAttributes[0]["hvsMaxmVoltCell"] = byteArray[9]
-    towerAttributes[0]["hvsMinmVoltCell"] = byteArray[10]
-    towerAttributes[0]["hvsMaxTempCell"] = byteArray[15]
-    towerAttributes[0]["hvsMinTempCell"] = byteArray[16]
+    if cell_offset == 0:
+        towerAttributes[0]["hvsMaxmVolt"] = buf2int16SI(byteArray, 5)
+        towerAttributes[0]["hvsMinmVolt"] = buf2int16SI(byteArray, 7)
+        towerAttributes[0]["hvsMaxmVoltCell"] = byteArray[9]
+        towerAttributes[0]["hvsMinmVoltCell"] = byteArray[10]
+        towerAttributes[0]["hvsMaxTempCell"] = byteArray[15]
+        towerAttributes[0]["hvsMinTempCell"] = byteArray[16]
 
-    # Collect cell voltage data for cells 1-16
-    MaxCells = 16
+    MaxCells = max(0, min(16, hvsNumCells - cell_offset))
     for i in range(MaxCells):
         cell_voltage = buf2int16SI(byteArray, i * 2 + 101)
-        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[i + 1] = cell_voltage
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[cell_offset + i + 1] = cell_voltage
 
-    # Collect balancing and other data
-    towerAttributes[0]["balancing"] = data[17:33].hex()
-    towerAttributes[0]["balancingcount"] = countSetBits(data[17:33])
-    towerAttributes[0]["chargeTotal"] = buf2int32US(byteArray, 33)
-    towerAttributes[0]["dischargeTotal"] = buf2int32US(byteArray, 37)
-    towerAttributes[0]["eta"] = buf2int32US(byteArray, 37) / buf2int32US(byteArray, 33) if buf2int32US(byteArray, 33) > 0 else 0
-    towerAttributes[0]["batteryVolt"] = buf2int16SI(byteArray, 45)
-    towerAttributes[0]["outVolt"] = buf2int16SI(byteArray, 51)
-    towerAttributes[0]["hvsSOCDiagnosis"] = round(buf2int16SI(byteArray, 53) / 10.0, 1)
-    towerAttributes[0]["soh"] = buf2int16SI(byteArray, 55)
-    towerAttributes[0]["state"] = f"{byteArray[59]:02x}{byteArray[60]:02x}"
+    if cell_offset == 0:
+        towerAttributes[0]["balancing"] = data[17:33].hex()
+        towerAttributes[0]["balancingcount"] = countSetBits(data[17:33])
+        towerAttributes[0]["chargeTotal"] = buf2int32US(byteArray, 33)
+        towerAttributes[0]["dischargeTotal"] = buf2int32US(byteArray, 37)
+        towerAttributes[0]["eta"] = buf2int32US(byteArray, 37) / buf2int32US(byteArray, 33) if buf2int32US(byteArray, 33) > 0 else 0
+        towerAttributes[0]["batteryVolt"] = buf2int16SI(byteArray, 45)
+        towerAttributes[0]["outVolt"] = buf2int16SI(byteArray, 51)
+        towerAttributes[0]["hvsSOCDiagnosis"] = round(buf2int16SI(byteArray, 53) / 10.0, 1)
+        towerAttributes[0]["soh"] = buf2int16SI(byteArray, 55)
+        towerAttributes[0]["state"] = f"{byteArray[59]:02x}{byteArray[60]:02x}"
 
-    print(f"Decoded packet 5 for tower 0: {towerAttributes[0]}")
+    print(f"Decoded packet 5 (offset={cell_offset}) for tower 0")
 
-def decode_packet6(data):
+def decode_packet6(data, cell_offset=0):
     byteArray = list(data)
-    MaxCells = hvsNumCells - 16
-    if MaxCells > 64:
-        MaxCells = 64
-
+    MaxCells = max(0, min(64, hvsNumCells - cell_offset - 16))
     for i in range(MaxCells):
         cell_voltage = buf2int16SI(byteArray, i * 2 + 5)
-        cell_label = f"{i + 17}"
-        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[i + 17] = cell_voltage
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[cell_offset + i + 17] = cell_voltage
 
-    print(f"Decoded packet 6 for tower 0: {towerAttributes[0]}")
+    print(f"Decoded packet 6 (offset={cell_offset}) for tower 0")
 
-def decode_packet7(data):
+def decode_packet7(data, cell_offset=0):
     byteArray = list(data)
-    MaxCells = hvsNumCells - 80
-    if MaxCells > 48:
-        MaxCells = 48
-
+    MaxCells = max(0, min(48, hvsNumCells - cell_offset - 80))
     for i in range(MaxCells):
         cell_voltage = buf2int16SI(byteArray, i * 2 + 5)
-        cell_label = f"{i + 81}"
-        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[i + 81] = cell_voltage
+        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[cell_offset + i + 81] = cell_voltage
 
-    MaxTemps = hvsNumTemps
-    if MaxTemps > 30:
-        MaxTemps = 30
+    if cell_offset == 0:
+        MaxTemps = min(30, hvsNumTemps)
+        for i in range(MaxTemps):
+            cell_temp = byteArray[i + 103]
+            towerAttributes[0].setdefault("hvsBatteryTempperCell", {})[i + 1] = cell_temp
 
-    for i in range(MaxTemps):
-        cell_temp = byteArray[i + 103]
-        cell_group_label = f"{i + 1}"
-        towerAttributes[0].setdefault("hvsBatteryTempperCell", {})[i + 1] = cell_temp
-
-    print(f"Decoded packet 7 for tower 0: {towerAttributes[0]}")
+    print(f"Decoded packet 7 (offset={cell_offset}) for tower 0")
 
 def decode_packet8(data):
     byteArray = list(data)
@@ -282,24 +282,7 @@ def decode_packet8(data):
         cell_group_label = f"{i + 31}"
         towerAttributes[0].setdefault("hvsBatteryTempperCell", {})[i + 31] = cell_temp
 
-    print(f"Decoded packet 8 for tower 0: {towerAttributes[0]}")
-
-def decode_response12(data):
-    byteArray = list(data)
-    MaxCells = 16
-    start_byte = 101
-    end_byte = start_byte + MaxCells * 2
-    available_bytes = len(byteArray) - start_byte
-    available_cells = available_bytes // 2
-    cells_to_read = min(MaxCells, available_cells)
-
-    for i in range(cells_to_read):
-        cell_index = i + 1 + 128
-        pos = i * 2 + start_byte
-        cell_voltage = buf2int16SI(byteArray, pos)
-        towerAttributes[0].setdefault("hvsBatteryVoltsperCell", {})[cell_index] = cell_voltage
-
-    print(f"Decoded response 12 for tower 0: {towerAttributes[0]}")
+    print(f"Decoded packet 8 for tower 0")
 
 def countSetBits(data):
     return sum(bin(byte).count('1') for byte in data)
@@ -420,9 +403,27 @@ def main():
                 handle_state(client, STATE_DECODE_PACKET8, MESSAGE_8, decode_packet8)
 
             if myState == STATE_DECODE_PACKET8:
-                handle_state(client, STATE_FINISH, MESSAGE_12, decode_response12)
+                myState = STATE_FINISH
 
             if myState == STATE_FINISH:
+                if hvsNumCells > 128:
+                    try:
+                        send_msg(client, make_request_batch_msg(2), 1.0)
+                        time.sleep(MESSAGE_DELAY)
+                        time.sleep(waitTime / 1000)
+                        send_msg(client, MESSAGE_4, 1.0)
+                        time.sleep(MESSAGE_DELAY)
+                        decode_packet5(send_msg(client, MESSAGE_5, 1.0), cell_offset=128)
+                        time.sleep(MESSAGE_DELAY)
+                        if hvsNumCells - 128 > 16:
+                            decode_packet6(send_msg(client, MESSAGE_6, 1.0), cell_offset=128)
+                            time.sleep(MESSAGE_DELAY)
+                        if hvsNumCells - 128 > 80:
+                            decode_packet7(send_msg(client, MESSAGE_7, 1.0), cell_offset=128)
+                            time.sleep(MESSAGE_DELAY)
+                    except Exception as e:
+                        print(f"Batch 2 cell read failed (cells 129+ may be missing): {e}")
+
                 update_prometheus_metrics()
                 last_success_gauge.set(time.time())
                 myState = STATE_START
