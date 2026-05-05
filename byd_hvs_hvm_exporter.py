@@ -10,6 +10,12 @@ SERVER_PORT = int(os.getenv("PROMETHEUS_PORT", "3425"))
 BUFFER_SIZE = 4096
 POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "30"))  # Polling interval in seconds
 DEBUG_RAW = os.getenv("DEBUG_RAW", "").lower() in ("1", "true", "yes")
+# Optional second-batch cell read (cells 129+). Provide the full Modbus
+# write hex (slave + function + register + count + bytecount + data + crc).
+# Empty disables. The standard batch-1 request is 0110055000020400018100f853;
+# the value 0x0002 in the first register is rejected on this firmware, so
+# the right command is unknown without protocol docs. Iterate by env var.
+BATCH2_REQUEST = os.getenv("BATCH2_REQUEST", "").strip()
 MESSAGE_DELAY = 0.2  # Delay between each message in seconds
 waitTime = 3000  # Wait time in milliseconds
 
@@ -121,11 +127,6 @@ def buf2int16SI(byteArray, pos):
 
 def buf2int16US(byteArray, pos):
     return byteArray[pos] * 256 + byteArray[pos + 1]
-
-def make_request_batch_msg(batch):
-    body = [0x01, 0x10, 0x05, 0x50, 0x00, 0x02, 0x04, (batch >> 8) & 0xff, batch & 0xff, 0x81, 0x00]
-    crc = modbus_crc(body)
-    return bytes(body + [crc & 0xff, (crc >> 8) & 0xff]).hex()
 
 def send_msg(client, msg, timeout):
     message_bytes = bytes.fromhex(msg)
@@ -406,9 +407,9 @@ def main():
                 myState = STATE_FINISH
 
             if myState == STATE_FINISH:
-                if hvsNumCells > 128:
+                if hvsNumCells > 128 and BATCH2_REQUEST:
                     try:
-                        send_msg(client, make_request_batch_msg(2), 1.0)
+                        send_msg(client, BATCH2_REQUEST, 1.0)
                         time.sleep(MESSAGE_DELAY)
                         time.sleep(waitTime / 1000)
                         send_msg(client, MESSAGE_4, 1.0)
@@ -422,7 +423,7 @@ def main():
                             decode_packet7(send_msg(client, MESSAGE_7, 1.0), cell_offset=128)
                             time.sleep(MESSAGE_DELAY)
                     except Exception as e:
-                        print(f"Batch 2 cell read failed (cells 129+ may be missing): {e}")
+                        print(f"Batch 2 cell read failed (cells 129+ missing): {e}")
 
                 update_prometheus_metrics()
                 last_success_gauge.set(time.time())
